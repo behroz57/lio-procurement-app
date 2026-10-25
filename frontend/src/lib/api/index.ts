@@ -84,22 +84,33 @@ export interface UpdateRequestInput {
   orderLines: OrderLineInput[];
 }
 
+// Numbers the document doesn't state (or that can't be parsed) come back as null.
+export interface ExtractedOrderLine {
+  positionDescription: string;
+  unitPrice: number | null;
+  amount: number | null;
+  unit: string;
+  totalPrice: number | null;
+}
+
 export interface ExtractedVendorData {
   title: string;
   vendorName: string;
   vatId: string;
   department: string;
-  orderLines: OrderLineInput[];
-  totalCost: number;
+  orderLines: ExtractedOrderLine[];
+  // Computed by the server from the line totals, not read from the document.
+  totalCost: number | null;
   commodityGroupId: number | null;
   commodityGroupName: string | null;
 }
 
 export interface ExtractionResponse {
   success: boolean;
-  data?: ExtractedVendorData;
-  error?: string;
-  missingFields?: string[];
+  data?: ExtractedVendorData | null;
+  error?: string | null;
+  missingFields?: string[] | null;
+  warnings: string[];
 }
 
 export interface Supplier {

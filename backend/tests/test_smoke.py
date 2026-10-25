@@ -3,6 +3,7 @@
 Run with: python -m pytest tests/ -q   (or plainly: python tests/test_smoke.py)
 """
 import io
+import json
 import uuid
 
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -479,7 +481,9 @@ def test_activity_log_and_document():
     client.delete(f"/requests/{rid}", headers=_auth(admin))
 
 
-def test_extraction_without_api_key():
+def test_extraction_without_api_key(monkeypatch):
+    # A key in .env or the environment must not turn this into a real API call.
+    monkeypatch.setattr(settings, "openai_api_key", None)
     r = client.post("/auth/signup", json={"email": "ex@example.com", "password": "secret123"})
     token = r.json()["access_token"]
 
@@ -494,6 +498,46 @@ def test_extraction_without_api_key():
     # empty text
     r = client.post("/extraction", json={"text": "  "}, headers=_auth(token))
     assert r.json()["success"] is False
+
+
+def test_extraction_missing_fields_follow_org_settings(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import extraction
+
+    reply = {
+        "title": "Chairs", "vendorName": "Example Supplies LLC", "customerName": "Buyer Co",
+        "vatId": "", "department": "",
+        "orderLines": [{"positionDescription": "Chair", "amount": 1, "unit": "pc",
+                        "unitPrice": 10.0, "totalPrice": 10.0, "isOptional": False}],
+        "documentGrandTotal": None, "documentTaxesAndFeesLines": [],
+        "commodityGroupId": 31, "commodityGroupName": "Software",
+    }
+    response = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=json.dumps(reply), refusal=None), finish_reason="stop"
+    )])
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(extraction, "OpenAI", lambda api_key: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: response))
+    ))
+
+    token = client.post(
+        "/auth/signup", json={"email": "mf@example.com", "password": "secret123"}
+    ).json()["access_token"]
+    client.post("/organizations", json={"name": "MF Co", "slug": "mf-co"}, headers=_auth(token))
+
+    # Empty department/tax ID are not "missing" unless the organization requires them.
+    r = client.post("/extraction", json={"text": "Quote"}, headers=_auth(token))
+    assert r.json()["success"] is True
+    assert r.json()["missingFields"] is None
+
+    client.patch(
+        "/organizations/me/settings",
+        json={"required_fields": ["department"]},
+        headers=_auth(token),
+    )
+    r = client.post("/extraction", json={"text": "Quote"}, headers=_auth(token))
+    assert r.json()["missingFields"] == ["Department"]
 
 
 def test_commodity_groups_expanded():
@@ -812,15 +856,6 @@ def test_org_settings_admin_only():
 
 
 if __name__ == "__main__":
-    test_full_user_journey()
-    test_pdf_parse()
-    test_extraction_without_api_key()
-    test_activity_log_and_document()
-    test_commodity_groups_expanded()
-    test_suppliers_seeded_with_empty_descriptions()
-    test_seed_is_idempotent()
-    test_demo_user_can_sign_in()
-    test_approval_flow_with_roles()
-    test_org_settings_required_fields()
-    test_org_settings_admin_only()
-    print("ALL SMOKE TESTS PASSED")
+    import pytest
+
+    raise SystemExit(pytest.main([__file__]))

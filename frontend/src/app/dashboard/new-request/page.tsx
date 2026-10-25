@@ -34,6 +34,7 @@ export default function NewRequestPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [warning, setWarning] = useState('');
+  const [extractionWarnings, setExtractionWarnings] = useState<string[]>([]);
   const [extracting, setExtracting] = useState(false);
 
   // PDF parsing mutation
@@ -61,6 +62,7 @@ export default function NewRequestPage() {
     setError('');
     setSuccess('');
     setWarning('');
+    setExtractionWarnings([]);
     setExtracting(true);
 
     try {
@@ -81,7 +83,15 @@ export default function NewRequestPage() {
       setVendorName(extracted.vendorName || '');
       setVatId(extracted.vatId || '');
       setDepartment(extracted.department || '');
-      setOrderLines(extracted.orderLines || []);
+      // Unknown numbers arrive as null; the form edits plain numbers.
+      setOrderLines(
+        (extracted.orderLines || []).map((line) => ({
+          ...line,
+          unitPrice: line.unitPrice ?? 0,
+          amount: line.amount ?? 0,
+          totalPrice: line.totalPrice ?? 0,
+        }))
+      );
       setTotalCost(extracted.totalCost || 0);
       
       // Set commodity group (now included in extraction)
@@ -96,6 +106,7 @@ export default function NewRequestPage() {
         );
       }
 
+      setExtractionWarnings(extractionResult.warnings || []);
       setSuccess('✓ PDF extracted successfully! Review and submit.');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
@@ -152,6 +163,7 @@ export default function NewRequestPage() {
     setError('');
     setSuccess('');
     setWarning('');
+    setExtractionWarnings([]);
 
     // Validation with scroll to top on error
     if (!commodityGroupId) {
@@ -212,6 +224,16 @@ export default function NewRequestPage() {
       {error && <Alert variant="error" className="mb-6">{error}</Alert>}
       {warning && <Alert variant="warning" className="mb-6">{warning}</Alert>}
       {success && <Alert variant="success" className="mb-6">{success}</Alert>}
+      {extractionWarnings.length > 0 && (
+        <Alert variant="warning" className="mb-6">
+          <p className="font-medium">Please review the extracted data:</p>
+          <ul className="list-disc pl-5 mt-1 space-y-0.5">
+            {extractionWarnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </Alert>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-8">
         {/* PDF Upload Section */}

@@ -53,7 +53,7 @@ docker compose up db        # Postgres only
 # backend  → http://localhost:7200
 cd backend
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"     # app + dev tools (pytest, ruff)
 alembic upgrade head        # schema
 python -m app.seed          # reference data (idempotent)
 uvicorn app.main:app --reload --port 7200
@@ -64,10 +64,33 @@ npm install
 npm run dev
 ```
 
+## PDF extraction
+
+Uploading a vendor quote parses the PDF (pypdf, layout mode) and sends the text
+to OpenAI (`OPENAI_MODEL`, default `gpt-4.1-mini`) with a strict JSON schema.
+
+- Alternatives and optional items ("Alt.", "Alternative", "U.P.") are returned
+  separately and are not part of the order lines or the total.
+- The total cost is always the sum of the order lines, computed on the server.
+- The "could not extract" notice lists only the vendor, the order lines and the
+  fields the organization marks as required in its settings.
+- The form shows warnings to review when line math doesn't add up, when the
+  lines don't match the document's grand total minus taxes and fees, or when
+  the vendor looks like the customer the quote is addressed to.
+
+Measure extraction quality against the sample quotes in
+`backend/tests/fixtures/quotes/` (needs the backend running with an OpenAI key):
+
+```bash
+cd backend
+python scripts/eval_extraction.py            # live run, saves to out/eval/
+python scripts/eval_extraction.py --rescore  # rescore the saved responses
+```
+
 ## Tests
 
 ```bash
-cd backend && python -m pytest      # API tests (in-memory SQLite)
+cd backend && python -m pytest      # API + extraction tests (in-memory SQLite, mocked OpenAI)
 cd frontend && npx tsc --noEmit && npm run build
 ```
 
