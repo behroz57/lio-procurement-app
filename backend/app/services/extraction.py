@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import CommodityGroup
 from app.schemas.extraction import ExtractedVendorData, ExtractionResponse
+from app.services.commodity_rules import match_rule, rules_from_settings
 
 logger = logging.getLogger(__name__)
 
@@ -232,10 +233,13 @@ def _consistency_warnings(extracted: ExtractedVendorData) -> list[str]:
     return warnings
 
 
-def extract_vendor_data(
-    pdf_text: str, db: Session, required_fields: list[str]
-) -> ExtractionResponse:
-    """Extract vendor data and classify the commodity group in one AI call."""
+def extract_vendor_data(pdf_text: str, db: Session, org_settings: dict) -> ExtractionResponse:
+    """Extract vendor data and classify the commodity group in one AI call.
+
+    ``org_settings`` is the caller's organization settings (required fields and
+    commodity rules); empty for a user without an organization.
+    """
+    required_fields = org_settings.get("required_fields", [])
     if not pdf_text or not pdf_text.strip():
         return ExtractionResponse(success=False, error="No text provided for extraction")
 
@@ -309,6 +313,20 @@ def extract_vendor_data(
             )
             extracted.commodity_group_id = None
             extracted.commodity_group_name = None
+
+    # Same rules as on request save, so the form shows the final group right away.
+    match = match_rule(
+        rules_from_settings(org_settings),
+        [extracted.title, *(line.position_description for line in extracted.order_lines)],
+        extracted.total_cost,
+        extracted.commodity_group_id,
+    )
+    group = match and next(
+        (g for g in commodity_groups if g.id == match[1].commodity_group_id), None
+    )
+    if group is not None:
+        extracted.commodity_group_id = group.id
+        extracted.commodity_group_name = group.name
 
     return ExtractionResponse(
         success=True,

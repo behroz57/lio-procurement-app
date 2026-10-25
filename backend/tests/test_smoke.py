@@ -774,7 +774,7 @@ def test_org_settings_required_fields():
     # Default settings: nothing extra required.
     r = client.get("/organizations/me/settings", headers=_auth(token))
     assert r.status_code == 200
-    assert r.json() == {"required_fields": []}
+    assert r.json() == {"required_fields": [], "commodity_rules": []}
 
     base_payload = {
         "requestorName": "S", "titleShortDescription": "T", "vendorName": "V",
@@ -853,6 +853,110 @@ def test_org_settings_admin_only():
         headers=_auth(member),
     )
     assert r.status_code == 403
+
+
+def _request_payload(title, description, group_id, total):
+    return {
+        "requestorName": "Rene Requester", "titleShortDescription": title,
+        "vendorName": "Example Supplies LLC", "vatId": "12-0000002",
+        "commodityGroupId": group_id, "totalCost": total, "department": "Ops",
+        "orderLines": [{"positionDescription": description, "unitPrice": total, "amount": 1,
+                        "unit": "pack", "totalPrice": total}],
+    }
+
+
+def test_commodity_rules_apply_per_organization():
+    acme = _signin("requester@acme.com")
+    acme_admin = _signin("admin@acme.com")
+    walmart = _signin("admin@walmart.com")
+
+    rules = client.get("/organizations/me/settings", headers=_auth(acme_admin)).json()[
+        "commodity_rules"
+    ]
+    assert [r["commodity_group_id"] for r in rules] == [11, 29, 15]
+    assert client.get("/organizations/me/settings", headers=_auth(walmart)).json()[
+        "commodity_rules"
+    ] == []
+
+    cable_ties = _request_payload("Workshop supplies", "Cable ties 200 mm, black", 49, 25.0)
+
+    # Acme: the cable-tie rule overrides the chosen group and logs which rule did it.
+    r = client.post("/requests", json=cable_ties, headers=_auth(acme))
+    assert r.status_code == 201, r.text
+    acme_id = r.json()["id"]
+    assert r.json()["commodity_group_id"] == 11
+    activity = client.get(f"/requests/{acme_id}/activity", headers=_auth(acme)).json()
+    rule_entry = next(a for a in activity if a["action"] == "commodity_rule")
+    assert "Electrical Engineering" in rule_entry["summary"] and "rule 1" in rule_entry["summary"]
+
+    # Another tenant has no rules: the same request keeps its group.
+    r = client.post("/requests", json=cable_ties, headers=_auth(walmart))
+    walmart_id = r.json()["id"]
+    assert r.json()["commodity_group_id"] == 49
+
+    # Update in Acme: choosing another group is overridden again and logged.
+    update = dict(cable_ties, title="Workshop supplies")
+    del update["titleShortDescription"]
+    r = client.put(f"/requests/{acme_id}", json=update, headers=_auth(acme))
+    assert r.json()["commodity_group_id"] == 11
+    activity = client.get(f"/requests/{acme_id}/activity", headers=_auth(acme)).json()
+    assert sum(a["action"] == "commodity_rule" for a in activity) == 2
+
+    # Software by current group: up to and including 1000 goes to Office Equipment.
+    small = client.post("/requests", json=_request_payload("Design tool", "Annual plan", 31, 1000.0),
+                        headers=_auth(acme)).json()
+    large = client.post("/requests", json=_request_payload("Design tool", "Annual plan", 31, 1000.01),
+                        headers=_auth(acme)).json()
+    assert (small["commodity_group_id"], large["commodity_group_id"]) == (15, 31)
+
+    for rid in (acme_id, small["id"], large["id"]):
+        client.delete(f"/requests/{rid}", headers=_auth(acme_admin))
+    client.delete(f"/requests/{walmart_id}", headers=_auth(walmart))
+
+
+def test_settings_patch_merges_and_keeps_commodity_rules():
+    admin = _signin("admin@acme.com")
+    before = client.get("/organizations/me/settings", headers=_auth(admin)).json()
+
+    r = client.patch(
+        "/organizations/me/settings", json={"required_fields": ["department"]},
+        headers=_auth(admin),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["required_fields"] == ["department"]
+    assert r.json()["commodity_rules"] == before["commodity_rules"]
+    assert client.get("/organizations/me/settings", headers=_auth(admin)).json()[
+        "commodity_rules"
+    ] == before["commodity_rules"]
+
+    # A rule must point at an existing commodity group.
+    r = client.patch(
+        "/organizations/me/settings",
+        json={"commodity_rules": [{"keywords": ["x"], "commodity_group_id": 999999}]},
+        headers=_auth(admin),
+    )
+    assert r.status_code == 422
+
+    client.patch("/organizations/me/settings", json=before, headers=_auth(admin))
+
+
+def test_seed_never_overwrites_commodity_rules():
+    admin = _signin("admin@acme.com")
+    before = client.get("/organizations/me/settings", headers=_auth(admin)).json()
+    custom = [{"keywords": ["stapler"], "commodity_group_id": 15}]
+    client.patch(
+        "/organizations/me/settings", json={"commodity_rules": custom}, headers=_auth(admin)
+    )
+
+    with TestingSession() as db:
+        assert seed(db)["commodity_rules"] == 0
+
+    rules = client.get("/organizations/me/settings", headers=_auth(admin)).json()[
+        "commodity_rules"
+    ]
+    assert [(r["keywords"], r["commodity_group_id"]) for r in rules] == [(["stapler"], 15)]
+
+    client.patch("/organizations/me/settings", json=before, headers=_auth(admin))
 
 
 if __name__ == "__main__":

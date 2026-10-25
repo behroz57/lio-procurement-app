@@ -45,8 +45,17 @@ export interface MyOrganization {
 // Request fields an org may optionally mark as required (see backend settings).
 export type ConfigurableRequiredField = 'vat_id' | 'department';
 
+export interface CommodityRule {
+  keywords: string[];
+  commodity_group_id: number;
+  max_total: number | null;
+  from_commodity_group_ids: number[];
+}
+
+// PATCH merges: settings left out of the request body are kept as they are.
 export interface OrganizationSettings {
   required_fields: ConfigurableRequiredField[];
+  commodity_rules?: CommodityRule[];
 }
 
 export interface MembersResponse {
@@ -181,7 +190,14 @@ export interface RequestActivity {
   id: string;
   request_id: string;
   actor_id: string | null;
-  action: 'created' | 'updated' | 'status_changed' | 'approved' | 'rejected' | 'document_attached';
+  action:
+    | 'created'
+    | 'updated'
+    | 'status_changed'
+    | 'approved'
+    | 'rejected'
+    | 'document_attached'
+    | 'commodity_rule';
   summary: string;
   detail: Record<string, unknown> | null;
   created_at: string;

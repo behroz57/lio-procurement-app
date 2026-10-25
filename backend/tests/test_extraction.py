@@ -14,7 +14,10 @@ from app.services import extraction
 
 class _FakeSession:
     def scalars(self, _statement):
-        return [CommodityGroup(id=31, category="Information Technology", name="Software")]
+        return [
+            CommodityGroup(id=11, category="Facility Management", name="Electrical Engineering"),
+            CommodityGroup(id=31, category="Information Technology", name="Software"),
+        ]
 
 
 def _fake_openai(payload: dict):
@@ -63,11 +66,13 @@ def _payload(**overrides):
 def extract(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
 
-    def run(payload, required_fields=()):
+    def run(payload, required_fields=(), commodity_rules=()):
         monkeypatch.setattr(extraction, "OpenAI", _fake_openai(payload))
-        result = extraction.extract_vendor_data(
-            "Quote text", _FakeSession(), list(required_fields)
-        )
+        org_settings = {
+            "required_fields": list(required_fields),
+            "commodity_rules": list(commodity_rules),
+        }
+        result = extraction.extract_vendor_data("Quote text", _FakeSession(), org_settings)
         assert result.success, result.error
         return result
 
@@ -176,6 +181,20 @@ def test_org_required_fields_are_reported_missing(extract):
 
     result = extract(_payload(vatId="12-3456789", department=""), required_fields=["vat_id"])
     assert result.missing_fields is None
+
+
+def test_org_commodity_rule_overrides_model_group_after_extraction(extract):
+    rules = [{"keywords": ["cable tie"], "commodity_group_id": 11}]
+    result = extract(
+        _payload(orderLines=[_line("Cable ties 200 mm, black", 10, 2.5, 25.0)]),
+        commodity_rules=rules,
+    )
+    assert (result.data.commodity_group_id, result.data.commodity_group_name) == (
+        11, "Electrical Engineering"
+    )
+
+    result = extract(_payload(), commodity_rules=rules)
+    assert result.data.commodity_group_id == 31
 
 
 def test_taxes_are_summed_on_the_server(extract):

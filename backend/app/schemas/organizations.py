@@ -11,6 +11,21 @@ MemberRole = Literal["admin", "buyer", "requester"]
 ConfigurableRequiredField = Literal["vat_id", "department"]
 
 
+class CommodityRule(BaseModel):
+    """Sets a request's commodity group when its title or an order line matches.
+
+    Fires if any keyword matches, or if the request's current group is one of
+    ``from_commodity_group_ids``, and the request total is at most ``max_total``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    keywords: list[str] = Field(default_factory=list)
+    commodity_group_id: int
+    max_total: float | None = None
+    from_commodity_group_ids: list[int] = Field(default_factory=list)
+
+
 class OrganizationSettings(BaseModel):
     """Per-organization configuration. Stored as JSONB, validated here.
 
@@ -21,6 +36,8 @@ class OrganizationSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     required_fields: list[ConfigurableRequiredField] = Field(default_factory=list)
+    # Evaluated in order; the first matching rule wins.
+    commodity_rules: list[CommodityRule] = Field(default_factory=list)
 
 
 class OrganizationCreate(BaseModel):

@@ -24,6 +24,7 @@ from app.schemas.requests import (
     RequestUpdate,
     StatusUpdate,
 )
+from app.services.commodity_rules import describe, match_rule, rules_from_settings
 
 router = APIRouter(prefix="/requests", tags=["requests"])
 
@@ -90,6 +91,33 @@ def _enforce_required_fields(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Missing fields required by your organization: {', '.join(missing)}",
         )
+
+
+def _apply_commodity_rule(
+    db: Session, organization_id: uuid.UUID, payload: RequestCreate | RequestUpdate
+) -> tuple[int, str, dict] | None:
+    """Apply the org's first matching commodity rule to the payload.
+
+    Returns (previous group id, activity summary, activity detail), or None.
+    """
+    org = db.get(Organization, organization_id)
+    texts = [payload.title, *(line.position_description for line in payload.order_lines)]
+    match = match_rule(
+        rules_from_settings(org.settings if org else None),
+        texts,
+        payload.total_cost,
+        payload.commodity_group_id,
+    )
+    if match is None:
+        return None
+    position, rule = match
+    previous = payload.commodity_group_id
+    payload.commodity_group_id = rule.commodity_group_id
+    group = db.get(CommodityGroup, rule.commodity_group_id)
+    group_name = group.name if group else str(rule.commodity_group_id)
+    summary = f"Commodity group set to {group_name} by {describe(position, rule)}"
+    detail = {"rule": position, "from": previous, "to": rule.commodity_group_id}
+    return previous, summary, detail
 
 
 def _log_activity(
@@ -183,6 +211,7 @@ def create_request(
 ) -> RequestOut:
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
+    rule_applied = _apply_commodity_rule(db, membership.organization_id, payload)
 
     # Vendor fields are already cleaned up during extraction, so we can persist
     # them directly here.
@@ -213,6 +242,9 @@ def create_request(
     db.add(request)
     db.flush()
     _log_activity(db, request.id, membership.user_id, "created", "Request created")
+    if rule_applied:
+        _, summary, detail = rule_applied
+        _log_activity(db, request.id, membership.user_id, "commodity_rule", summary, detail)
     db.commit()
 
     request = _get_org_request(db, request.id, membership.organization_id)
@@ -229,6 +261,7 @@ def update_request(
     request = _get_org_request(db, request_id, membership.organization_id)
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
+    rule_applied = _apply_commodity_rule(db, membership.organization_id, payload)
 
     changed = _changed_fields(request, payload)
 
@@ -263,6 +296,10 @@ def update_request(
             f"Updated {', '.join(labels)}",
             {"changed_fields": changed},
         )
+    # Only log on update when the rule overrode what the user chose.
+    if rule_applied and rule_applied[0] != payload.commodity_group_id:
+        _, summary, detail = rule_applied
+        _log_activity(db, request.id, membership.user_id, "commodity_rule", summary, detail)
     db.commit()
 
     request = _get_org_request(db, request_id, membership.organization_id)

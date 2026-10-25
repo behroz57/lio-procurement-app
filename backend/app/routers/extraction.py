@@ -28,5 +28,4 @@ def extract(
         select(OrganizationMember).where(OrganizationMember.user_id == user.id)
     )
     org = db.get(Organization, membership.organization_id) if membership else None
-    required_fields = (org.settings or {}).get("required_fields", []) if org else []
-    return extract_vendor_data(payload.text, db, required_fields)
+    return extract_vendor_data(payload.text, db, (org.settings or {}) if org else {})

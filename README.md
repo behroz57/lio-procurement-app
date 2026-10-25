@@ -40,8 +40,8 @@ Siemens, BMW** — each with an admin at `admin@<company>.com` (same password).
 Their data is fully isolated from Acme's.
 
 On startup the backend applies schema migrations and seeds the database (demo
-accounts, organizations, commodity groups, suppliers) — both steps are
-idempotent, so restarts never duplicate or overwrite anything (your data lives
+accounts, organizations, commodity groups, suppliers, Acme's commodity rules).
+Both steps are idempotent, so restarts never duplicate or overwrite anything (your data lives
 in the `postgres_data` volume; `docker compose down -v` resets it). The OpenAI
 key is only needed for PDF extraction — everything else works without it.
 
@@ -86,6 +86,31 @@ cd backend
 python scripts/eval_extraction.py            # live run, saves to out/eval/
 python scripts/eval_extraction.py --rescore  # rescore the saved responses
 ```
+
+## Commodity rules (per organization)
+
+An organization can force how requests are categorised with `commodity_rules`
+in its settings (`PATCH /organizations/me/settings`, admins only). Each rule is
+`{keywords, commodity_group_id, max_total?, from_commodity_group_ids?}`:
+
+- It fires if a keyword appears in the request title or an order line
+  (case-insensitive, whole words, singular or plural), or if the request's
+  current group is in `from_commodity_group_ids`, and the request total is at
+  most `max_total` (inclusive).
+- Rules are checked in order; the first match wins and sets the group for the
+  whole request.
+- Rules apply when a request is created or updated (overriding the chosen
+  group, logged in the request's activity) and right after PDF extraction.
+- Settings PATCH merges: fields left out of the body keep their saved values.
+
+Acme Corp is seeded with three rules (only if it has no `commodity_rules` yet;
+existing rules are never overwritten). Other tenants start with none.
+
+| Order | Matches | Group |
+| --- | --- | --- |
+| 1 | "cable tie", "zip tie" | 11 Facility Management / Electrical Engineering |
+| 2 | "toner" | 29 Information Technology / Hardware |
+| 3 | "software subscription", "saas", "software license", "software licence", or current group 31, 106, 436, 766, 1096, 1426, 1756; total up to 1000 | 15 Facility Management / Office Equipment |
 
 ## Tests
 

@@ -17,6 +17,7 @@ from app.data.articles import ARTICLES
 from app.data.commodity_groups import COMMODITY_GROUPS
 from app.data.suppliers import SUPPLIERS
 from app.db.session import SessionLocal
+from app.schemas.organizations import CommodityRule
 from app.models import (
     Article,
     CommodityGroup,
@@ -50,6 +51,31 @@ ORG_ACCOUNTS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
     ("Siemens", "siemens", [("admin@siemens.com", "Siemens Admin", "admin")]),
     ("BMW", "bmw", [("admin@bmw.com", "BMW Admin", "admin")]),
 ]
+
+
+# Acme's booking rules (Task 3), in priority order. Seeded once; never overwritten.
+ACME_COMMODITY_RULES: list[dict] = [
+    {"keywords": ["cable tie", "zip tie"], "commodity_group_id": 11},  # Electrical Engineering
+    {"keywords": ["toner"], "commodity_group_id": 29},  # IT Hardware
+    {
+        # Small software subscriptions -> Office Equipment
+        "keywords": ["software subscription", "saas", "software license", "software licence"],
+        "commodity_group_id": 15,
+        "max_total": 1000,
+        # Software (31) and Office Productivity Suite (106) with all its variants.
+        "from_commodity_group_ids": [31, 106, 436, 766, 1096, 1426, 1756],
+    },
+]
+
+
+def seed_commodity_rules(organization: Organization) -> int:
+    """Give the org Acme's rules if it has no commodity_rules key yet."""
+    settings = organization.settings or {}
+    if "commodity_rules" in settings:
+        return 0
+    rules = [CommodityRule.model_validate(r).model_dump() for r in ACME_COMMODITY_RULES]
+    organization.settings = {**settings, "commodity_rules": rules}
+    return 1
 
 
 def seed_commodity_groups(db: Session) -> int:
@@ -179,6 +205,7 @@ def seed(db: Session) -> dict[str, int]:
         "suppliers": seed_suppliers(db, dev_org_id) if dev_org_id else 0,
         # Articles reference suppliers by name, so this must run after suppliers.
         "articles": seed_articles(db, dev_org_id) if dev_org_id else 0,
+        "commodity_rules": seed_commodity_rules(dev_org) if dev_org else 0,
         "organizations": orgs_created,
         "users": users_created,
     }
