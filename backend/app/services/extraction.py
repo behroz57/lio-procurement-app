@@ -234,11 +234,7 @@ def _consistency_warnings(extracted: ExtractedVendorData) -> list[str]:
 
 
 def extract_vendor_data(pdf_text: str, db: Session, org_settings: dict) -> ExtractionResponse:
-    """Extract vendor data and classify the commodity group in one AI call.
-
-    ``org_settings`` is the caller's organization settings (required fields and
-    commodity rules); empty for a user without an organization.
-    """
+    """Extract vendor data and classify the commodity group, applying the org's settings."""
     required_fields = org_settings.get("required_fields", [])
     if not pdf_text or not pdf_text.strip():
         return ExtractionResponse(success=False, error="No text provided for extraction")
@@ -287,7 +283,6 @@ def extract_vendor_data(pdf_text: str, db: Session, org_settings: dict) -> Extra
     extracted.order_lines = [line for line in lines if not line.is_optional]
     extracted.optional_lines = [line for line in lines if line.is_optional]
 
-    # The total is always the sum of the extracted line totals, never the model's.
     extracted.total_cost = round(
         sum(line.total_price for line in extracted.order_lines if line.total_price is not None),
         2,

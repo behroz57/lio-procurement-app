@@ -39,8 +39,7 @@ def _to_int(value: object) -> int | None:
     return int(number)
 
 
-# camelCase on the wire to match the AI's JSON output and the frontend.
-# Validators are lenient so one bad field never fails the whole extraction.
+# Lenient validators: one bad field from the AI never fails the whole extraction.
 class OrderLineData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

@@ -101,6 +101,16 @@ python scripts/eval_extraction.py            # live run, saves to out/eval/
 python scripts/eval_extraction.py --rescore  # rescore the saved responses
 ```
 
+The other changes have live-API eval scripts too (backend running; they delete
+any requests they create):
+
+```bash
+cd backend
+python scripts/eval_suggestions.py           # catalog suggestions (--search: old search)
+python scripts/eval_categorisation.py        # commodity rules (needs an OpenAI key)
+python scripts/eval_approval.py              # auto-approval below the limit
+```
+
 ## Catalog price suggestions
 
 On the New Request page each order line shows up to 3 matching articles from the
@@ -143,7 +153,7 @@ existing rules are never overwritten). Other tenants start with none.
 ## Tests
 
 ```bash
-cd backend && python -m pytest      # API + extraction tests (in-memory SQLite, mocked OpenAI)
+cd backend && python -m pytest      # API, extraction, rules, suggestions and approval tests
 cd frontend && npx tsc --noEmit && npm run build
 ```
 

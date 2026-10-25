@@ -12,11 +12,7 @@ ConfigurableRequiredField = Literal["vat_id", "department"]
 
 
 class CommodityRule(BaseModel):
-    """Sets a request's commodity group when its title or an order line matches.
-
-    Fires if any keyword matches, or if the request's current group is one of
-    ``from_commodity_group_ids``, and the request total is at most ``max_total``.
-    """
+    """Sets the commodity group on a keyword or source-group match, within max_total."""
 
     model_config = ConfigDict(extra="forbid")
 

@@ -48,7 +48,6 @@ export default function NewRequestPage() {
   const [extractionWarnings, setExtractionWarnings] = useState<string[]>([]);
   const [extracting, setExtracting] = useState(false);
 
-  // Catalog suggestions per order line, keyed by the line's stable key
   const [suggestions, setSuggestions] = useState<Record<number, api.ArticleSuggestion[]>>({});
   const nextLineKey = useRef(0);
   const suggestionTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
@@ -186,7 +185,6 @@ export default function NewRequestPage() {
     const newTotal = updated.reduce((sum, line) => sum + line.totalPrice, 0);
     setTotalCost(newTotal);
 
-    // Look up catalog articles once the user pauses typing
     if (field === 'positionDescription') {
       const key = updated[index].key;
       clearTimeout(suggestionTimers.current[key]);
@@ -194,7 +192,6 @@ export default function NewRequestPage() {
     }
   };
 
-  // Use a catalog article: description, negotiated unit price and unit; amount stays
   const applySuggestion = (index: number, suggestion: api.ArticleSuggestion) => {
     const updated = [...orderLines];
     const line = updated[index];

@@ -97,10 +97,6 @@ def _enforce_required_fields(
 def _apply_commodity_rule(
     db: Session, organization_id: uuid.UUID, payload: RequestCreate | RequestUpdate
 ) -> tuple[int, str, dict] | None:
-    """Apply the org's first matching commodity rule to the payload.
-
-    Returns (previous group id, activity summary, activity detail), or None.
-    """
     org = db.get(Organization, organization_id)
     texts = [payload.title, *(line.position_description for line in payload.order_lines)]
     match = match_rule(
@@ -133,7 +129,6 @@ def _auto_approve_limit(db: Session, organization_id: uuid.UUID) -> float | None
 def _reevaluate_approval(
     request: ProcurementRequest, total: float, limit: float
 ) -> tuple[str, str] | None:
-    """Apply the auto-approval rule after a total change; return the activity to log."""
     previous = request.approval_status
     # A buyer's rejection is final; lowering the total must not bypass it.
     if previous == "rejected":

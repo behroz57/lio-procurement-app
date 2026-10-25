@@ -30,12 +30,7 @@ def content_words(text: str) -> list[str]:
 
 
 def rank_articles(query: str, articles: list[_Article]) -> list[tuple[float, _Article]]:
-    """Return (score, article) for every acceptable match, best first.
-
-    The score is the share of the query's words found in the article, each word
-    weighted by how rare it is in this catalog; a word the catalog never uses
-    weighs the most, so a query about something the catalog lacks scores low.
-    """
+    """(score, article) per acceptable match, best first; score is rarity-weighted word overlap."""
     ordered_query_words = content_words(query)
     if not ordered_query_words or not articles:
         return []
@@ -57,8 +52,7 @@ def rank_articles(query: str, articles: list[_Article]) -> list[tuple[float, _Ar
         if not matched:
             continue
         score = sum(weight[word] for word in matched) / total_weight
-        # A partial match needs more than one incidental word: either two query words
-        # match, or the query's item word is the word the article's name starts with.
+        # A partial match needs two words, or the item word starting the article's name.
         same_item = item_word in matched and words[0] == item_word
         if score >= STRONG_COVERAGE or (
             score >= MIN_COVERAGE and (same_item or len(matched) >= 2)

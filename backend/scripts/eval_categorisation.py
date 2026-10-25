@@ -17,8 +17,7 @@ BASE_URL = "http://localhost:7200"
 PASSWORD = "demo1234"
 SUBMITTED_GROUP = 49
 
-# expected: a group id, or None for "unchanged" (saved group stays the submitted one).
-# extraction_not: for unchanged cases, a group the suggestion must not be; omitted means n/a.
+# expected None = saved group unchanged; extraction_not = group the suggestion must not be.
 CASES = [
     {"name": "1 cable ties", "user": "requester@acme.com", "expected": 11,
      "lines": [("Cable ties 200 pcs", 150.0)]},
