@@ -1,0 +1,63 @@
+{
+  "_notes": [
+    "Vendor is the company that issued the quote, never the addressee.",
+    "Department is empty because no quote names an Acme department.",
+    "Alternatives and heading lines are not order lines.",
+    "Discounts are applied into the unit price.",
+    "Shipping is an order line.",
+    "Tax and government fees are excluded.",
+    "Total cost is the sum of order lines."
+  ],
+  "QT-4120-Cust-14918.pdf": {
+    "vendor": ["Greenmantle Moss Studio"],
+    "tax_id": "85-3252405",
+    "department": "",
+    "lines": [
+      {"hint": "moss art panel", "qty": 1, "unit_price": 715.26, "total": 715.26},
+      {"hint": "logo horizontal", "qty": 1, "unit_price": 622.00, "total": 622.00},
+      {"hint": "shipping", "qty": 1, "unit_price": 215.00, "total": 215.00}
+    ],
+    "total_cost": 1552.26
+  },
+  "QT-OF2312380-Cust-57692.pdf": {
+    "vendor": ["Bloomcraft Interiors", "verdeform"],
+    "tax_id": "27-1073640",
+    "department": "",
+    "lines": [
+      {"hint": "sq ft module", "qty": 13.78, "unit_price": 52.00, "total": 716.56},
+      {"hint": "edge greening", "qty": 15.75, "unit_price": 7.65, "total": 120.49},
+      {"hint": "acrylic logo", "qty": 1, "unit_price": 350.00, "total": 350.00},
+      {"hint": "shipping", "qty": 1, "unit_price": 113.85, "total": 113.85}
+    ],
+    "total_cost": 1300.90
+  },
+  "Quote_1__Lio_Technologies_Inc__1x_MBA___2214703918.pdf": {
+    "vendor": ["Apple"],
+    "tax_id": "94-2404110",
+    "department": "",
+    "lines": [
+      {"hint": "MacBook Air", "qty": 1, "unit_price": 1409.06, "total": 1409.06}
+    ],
+    "total_cost": 1409.06
+  },
+  "Quote_Hartwell_Cleveland_ACME_Grinding_Machine.pdf": {
+    "vendor": ["Hartwell Industrial Tools"],
+    "tax_id": null,
+    "department": "",
+    "lines": [
+      {"hint": "grinding machine", "qty": 1, "unit_price": 15000.00, "total": 15000.00},
+      {"hint": "delivery and installation", "qty": 1, "unit_price": 2000.00, "total": 2000.00}
+    ],
+    "total_cost": 17000.00
+  },
+  "QuoteA0492_23.Pdf": {
+    "vendor": ["Hollis Greenscapes"],
+    "tax_id": "94-1985704",
+    "department": "",
+    "lines": [
+      {"hint": "moss panel 70:30", "qty": 1, "unit_price": 1560.00, "total": 1560.00},
+      {"hint": "transport", "qty": 1, "unit_price": 320.00, "total": 320.00}
+    ],
+    "total_cost": 1880.00
+  }
+}

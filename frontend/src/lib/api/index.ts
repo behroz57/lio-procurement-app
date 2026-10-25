@@ -45,8 +45,19 @@ export interface MyOrganization {
 // Request fields an org may optionally mark as required (see backend settings).
 export type ConfigurableRequiredField = 'vat_id' | 'department';
 
+export interface CommodityRule {
+  keywords: string[];
+  commodity_group_id: number;
+  max_total: number | null;
+  from_commodity_group_ids: number[];
+}
+
+// PATCH merges: settings left out of the request body are kept as they are.
 export interface OrganizationSettings {
   required_fields: ConfigurableRequiredField[];
+  commodity_rules?: CommodityRule[];
+  // Totals strictly below this are approved automatically; null means never.
+  auto_approve_below?: number | null;
 }
 
 export interface MembersResponse {
@@ -84,22 +95,33 @@ export interface UpdateRequestInput {
   orderLines: OrderLineInput[];
 }
 
+// Numbers the document doesn't state (or that can't be parsed) come back as null.
+export interface ExtractedOrderLine {
+  positionDescription: string;
+  unitPrice: number | null;
+  amount: number | null;
+  unit: string;
+  totalPrice: number | null;
+}
+
 export interface ExtractedVendorData {
   title: string;
   vendorName: string;
   vatId: string;
   department: string;
-  orderLines: OrderLineInput[];
-  totalCost: number;
+  orderLines: ExtractedOrderLine[];
+  // Computed by the server from the line totals, not read from the document.
+  totalCost: number | null;
   commodityGroupId: number | null;
   commodityGroupName: string | null;
 }
 
 export interface ExtractionResponse {
   success: boolean;
-  data?: ExtractedVendorData;
-  error?: string;
-  missingFields?: string[];
+  data?: ExtractedVendorData | null;
+  error?: string | null;
+  missingFields?: string[] | null;
+  warnings: string[];
 }
 
 export interface Supplier {
@@ -125,6 +147,15 @@ export interface Article {
   unit: string;
   quantity: string;
   created_at: string;
+}
+
+export interface ArticleSuggestion {
+  article_number: string;
+  description: string;
+  supplier_name: string | null;
+  unit_price: string;
+  currency: string;
+  unit: string;
 }
 
 export interface ArticlePage {
@@ -170,7 +201,16 @@ export interface RequestActivity {
   id: string;
   request_id: string;
   actor_id: string | null;
-  action: 'created' | 'updated' | 'status_changed' | 'approved' | 'rejected' | 'document_attached';
+  action:
+    | 'created'
+    | 'updated'
+    | 'status_changed'
+    | 'approved'
+    | 'rejected'
+    | 'document_attached'
+    | 'commodity_rule'
+    | 'auto_approved'
+    | 'approval_reset';
   summary: string;
   detail: Record<string, unknown> | null;
   created_at: string;
@@ -314,6 +354,12 @@ export const articles = {
 
   count(): Promise<{ count: number }> {
     return apiFetch('/articles/count');
+  },
+
+  /** Negotiated catalog articles matching an order line description, best first. */
+  suggestions(q: string, limit = 3): Promise<ArticleSuggestion[]> {
+    const qs = new URLSearchParams({ q, limit: String(limit) });
+    return apiFetch(`/articles/suggestions?${qs.toString()}`);
   },
 };
 

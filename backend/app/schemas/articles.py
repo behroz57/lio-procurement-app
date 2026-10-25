@@ -20,6 +20,15 @@ class ArticleOut(BaseModel):
     created_at: datetime
 
 
+class ArticleSuggestion(BaseModel):
+    article_number: str
+    description: str
+    supplier_name: str | None
+    unit_price: Decimal
+    currency: str
+    unit: str
+
+
 class ArticlePage(BaseModel):
     """A page of articles plus the totals the UI needs to render pagination."""
 

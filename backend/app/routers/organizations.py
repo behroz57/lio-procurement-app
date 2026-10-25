@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_membership, get_current_user, require_org_admin
 from app.db.session import get_db
 from app.models import (
+    CommodityGroup,
     Organization,
     OrganizationInvite,
     OrganizationMember,
@@ -94,10 +95,22 @@ def update_settings(
     membership: OrganizationMember = Depends(require_org_admin),
     db: Session = Depends(get_db),
 ) -> OrganizationSettings:
+    target_ids = {rule.commodity_group_id for rule in payload.commodity_rules}
+    known_ids = set(
+        db.scalars(select(CommodityGroup.id).where(CommodityGroup.id.in_(target_ids)))
+    )
+    if target_ids - known_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown commodity group id: {sorted(target_ids - known_ids)}",
+        )
+
     org = db.get(Organization, membership.organization_id)
-    org.settings = payload.model_dump()
+    # Merge, so saving one setting (e.g. required fields) never wipes the others.
+    merged = {**(org.settings or {}), **payload.model_dump(exclude_unset=True)}
+    org.settings = merged
     db.commit()
-    return payload
+    return OrganizationSettings(**merged)
 
 
 @router.get("/me/members", response_model=MembersResponse)

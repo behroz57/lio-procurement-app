@@ -10,5 +10,6 @@ def extract_text(pdf_bytes: bytes) -> str:
     text-based PDFs.
     """
     reader = PdfReader(io.BytesIO(pdf_bytes))
-    pages = [page.extract_text() or "" for page in reader.pages]
+    # Layout mode keeps the column positions, so table rows stay on one line.
+    pages = [page.extract_text(extraction_mode="layout") or "" for page in reader.pages]
     return "\n".join(pages)

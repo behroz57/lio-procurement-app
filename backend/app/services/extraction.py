@@ -2,95 +2,240 @@ import json
 import logging
 
 from openai import OpenAI
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import CommodityGroup
 from app.schemas.extraction import ExtractedVendorData, ExtractionResponse
+from app.services.commodity_rules import match_rule, rules_from_settings
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
-    "You are a data extraction and classification specialist. Always respond with "
-    "valid JSON only, no markdown or code blocks. Extract all information accurately "
-    "from US business documents and classify into the appropriate commodity "
-    "group based on the full context of the offer."
+# One retry when the reply can't be parsed.
+MAX_ATTEMPTS = 2
+LINE_TOLERANCE = 0.01
+# Same seed on every call so repeated extractions of a quote vary less.
+MODEL_SEED = 42
+NON_TAX_ID_LABELS = ("permit", "account", "customer", "routing", "license")
+
+API_ERROR_MESSAGE = (
+    "The AI service could not process this document. "
+    "Please try again or fill in the form manually."
 )
+PARSE_ERROR_MESSAGE = (
+    "The AI response for this document could not be read. "
+    "Please try again or fill in the form manually."
+)
+
+SYSTEM_PROMPT = (
+    "You extract structured data from vendor quotes for a procurement team and "
+    "classify each quote into a commodity group. Follow the rules exactly and only "
+    "report what the document states."
+)
+
+_NULLABLE_NUMBER = {"type": ["number", "null"]}
+
+# No totalCost: the server computes it from the lines, never the model.
+RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "vendor_quote_extraction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "vendorName": {"type": "string"},
+                "customerName": {"type": "string"},
+                "vatId": {"type": "string"},
+                "vatIdLabel": {"type": "string"},
+                "department": {"type": "string"},
+                "orderLines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "positionDescription": {"type": "string"},
+                            "amount": _NULLABLE_NUMBER,
+                            "unit": {"type": "string"},
+                            "unitPrice": _NULLABLE_NUMBER,
+                            "totalPrice": _NULLABLE_NUMBER,
+                            "isOptional": {"type": "boolean"},
+                        },
+                        "required": [
+                            "positionDescription",
+                            "amount",
+                            "unit",
+                            "unitPrice",
+                            "totalPrice",
+                            "isOptional",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                "documentGrandTotal": _NULLABLE_NUMBER,
+                "documentTaxesAndFeesLines": {"type": "array", "items": {"type": "number"}},
+                "commodityGroupId": {"type": ["integer", "null"]},
+                "commodityGroupName": {"type": ["string", "null"]},
+            },
+            "required": [
+                "title",
+                "vendorName",
+                "customerName",
+                "vatId",
+                "vatIdLabel",
+                "department",
+                "orderLines",
+                "documentGrandTotal",
+                "documentTaxesAndFeesLines",
+                "commodityGroupId",
+                "commodityGroupName",
+            ],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def _build_prompt(pdf_text: str, commodity_groups_list: str) -> str:
-    return f"""You are a data extraction and classification specialist. Extract procurement/vendor offer information from the following US document text AND classify it into the appropriate commodity group.
+    return f"""Extract the procurement data from the vendor quote below and classify it into one commodity group.
 
-Document Text:
-{pdf_text}
+FIELDS AND RULES
 
-Please extract the following information:
-1. Title/Short Description (A brief summary of what this procurement is for - e.g., "Office Equipment Purchase", "Software Licenses", etc.)
-2. Vendor Name (Vendor/Supplier/Seller/Company name)
-3. Tax ID (Employer Identification Number/EIN/Federal Tax ID/TIN/VAT ID)
-4. Department/Customer (Department/Customer/Bill To/Customer name)
-5. Order Lines/Items (All line items with):
-   - Position Description (Description/Product/Item/Article)
-   - Unit Price (Unit Price/Price/Rate/Price per unit)
-   - Amount (Qty/Quantity/Count)
-   - Unit (Unit/UoM - e.g., "licenses", "pieces", "ea.", "items")
-   - Total Price (Total/Ext. Price/Amount)
-6. Total Cost (Grand Total/Total Cost/Total Offer Cost)
-7. Commodity Group Classification - Select the SINGLE most appropriate commodity group from the list below
+title: a short description (2-5 words) of what is being purchased.
 
-Available Commodity Groups (ID | Category | Name):
+vendorName: the company that issued and signs the quote. Look at the letterhead, the footer, the sender line above the address block, "Prepared by" / signature lines, the sales rep's email domain, and the company whose terms and conditions apply. Never use the addressee: the company in the recipient address block or after "Prepared for", "Bill to", "Ship to" or "Customer" is the buyer, not the vendor.
+
+customerName: the addressee, i.e. the company the quote is addressed to (recipient address block, "Prepared for", "Bill to", "Customer"). The vendor and the customer are always different companies; if the name you picked for vendorName is the addressee, look again for the issuing company.
+
+vatId: the vendor's tax ID (EIN, Federal Tax ID, TIN or VAT ID), often in the footer. Never the buyer's tax ID, a seller's permit, a license number or a bank number. Empty string if the document shows none.
+
+vatIdLabel: the label printed next to that tax ID (e.g. "EIN", "Tax ID", "VAT ID"), exactly as printed. Empty string if there is no tax ID.
+
+department: only if the document explicitly names a department of the buyer (for example "Department: Marketing"). Otherwise an empty string. Never put a company or person name here.
+
+orderLines: every priced line of the quote.
+- isOptional: true for any alternative, optional or "U.P." item, or an item priced without being added to the total. The marker ("Alt.", "Alternative", "Optional", "U.P." or similar) may be on the item's own row, on a separate line near the item, or in a preceding heading such as "Alternative: ...". false for items that are part of the order.
+- Exclude heading lines that have no quantity and price, upsells, and marketing or descriptive text.
+- The first number on a table row may be a position or item number, not the quantity. Use the value in the quantity column.
+- unitPrice is the price per unit after any discount or surcharge, so amount × unitPrice = totalPrice.
+- Keep fractional quantities exactly as written (e.g. 13.78) and keep the unit as written.
+- Shipping, freight, delivery or transport charged as a cost is its own order line, even if it only appears in the totals block (amount 1, unitPrice = totalPrice = the charge).
+- Sales tax, VAT and government fees (e.g. recycling or environmental fees) are not order lines.
+- Prices are plain numbers without currency symbols or thousands separators ("1,438.00" -> 1438.00).
+- Use null for a number the document does not state.
+
+documentGrandTotal: the final total printed on the document (e.g. "Grand total", "Total due"), including taxes and fees. Null if none is printed.
+
+documentTaxesAndFeesLines: every tax and government fee amount printed on the document (e.g. sales tax, VAT, eWaste or recycling fees), one entry per printed amount, exactly as printed. Do not add them up. Do not include subtotals, shipping or the grand total. Empty list if none are printed.
+
+commodityGroupId / commodityGroupName: the single most appropriate group from the list below, based on the primary nature and purpose of the items. Use null for both if genuinely uncertain.
+
+AVAILABLE COMMODITY GROUPS (ID | Category | Name):
 {commodity_groups_list}
 
-IMPORTANT INSTRUCTIONS:
-- For the title, create a SHORT (2-5 words) description based on the main items being purchased
-- Extract ALL line items, even if there are many
-- For unit prices and totals, extract only the numeric value (remove currency symbols)
-- For the unit field, write out abbreviations in plain English (e.g., "ea." -> "pieces", "lic." -> "licenses")
-- Be careful with US number formatting (e.g., "1,438.00" = 1438.00)
-- For classification, consider the PRIMARY nature and purpose of the items:
-  * Branded office decor/furniture → Office Equipment (15)
-  * Traditional promotional items (brochures, giveaways, banners) → Promotional Materials (43)
-  * Software/IT products → Software (31) or IT Services (30)
-  * If genuinely uncertain, set commodityGroupId to null
-
-Return ONLY valid JSON in this exact format (no markdown, no code blocks):
-{{
-  "title": "Short description of procurement",
-  "vendorName": "Company Name",
-  "vatId": "12-3456789",
-  "department": "Department Name",
-  "orderLines": [
-    {{
-      "positionDescription": "Item description",
-      "unitPrice": 150.00,
-      "amount": 10,
-      "unit": "licenses",
-      "totalPrice": 1500.00
-    }}
-  ],
-  "totalCost": 1500.00,
-  "commodityGroupId": 15,
-  "commodityGroupName": "Office Equipment"
-}}"""
+DOCUMENT TEXT:
+<<<
+{pdf_text}
+>>>"""
 
 
-def _strip_markdown_fences(content: str) -> str:
-    cleaned = content.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned.removeprefix("```json").strip()
-    elif cleaned.startswith("```"):
-        cleaned = cleaned.removeprefix("```").strip()
-    if cleaned.endswith("```"):
-        cleaned = cleaned.removesuffix("```").strip()
-    return cleaned
+class _UnreadableReply(Exception):
+    pass
 
 
-def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
-    """Extract vendor data and classify commodity group in one AI call.
+def _request_extraction(client: OpenAI, prompt: str) -> ExtractedVendorData:
+    response = client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        response_format=RESPONSE_FORMAT,
+        temperature=0,
+        seed=MODEL_SEED,
+        max_completion_tokens=4000,
+    )
+    choice = response.choices[0]
+    if not choice.message.content:
+        refusal = getattr(choice.message, "refusal", None)
+        raise _UnreadableReply(
+            f"empty content (finish_reason={choice.finish_reason}, refusal={refusal!r})"
+        )
+    try:
+        return ExtractedVendorData.model_validate(json.loads(choice.message.content))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise _UnreadableReply(f"finish_reason={choice.finish_reason}: {exc}") from exc
 
-    Port of ``src/actions/extraction.ts`` — same prompt, model and validation.
-    """
+
+def _reject_mislabeled_tax_id(extracted: ExtractedVendorData) -> list[str]:
+    label = extracted.vat_id_label.casefold()
+    if not extracted.vat_id or not any(word in label for word in NON_TAX_ID_LABELS):
+        return []
+    rejected = extracted.vat_id
+    extracted.vat_id = ""
+    return [
+        f'The tax ID "{rejected}" is labeled "{extracted.vat_id_label}", which is not a '
+        "tax ID, so it was cleared. Please enter the vendor's tax ID manually."
+    ]
+
+
+def _consistency_warnings(extracted: ExtractedVendorData) -> list[str]:
+    warnings: list[str] = []
+    vendor = extracted.vendor_name.strip()
+    if not vendor:
+        warnings.append("No vendor was found in the document.")
+    elif vendor.casefold() == extracted.customer_name.strip().casefold():
+        warnings.append(
+            f"The vendor ({vendor}) is the same as the customer the quote is addressed to; "
+            "please check the vendor name."
+        )
+    if not extracted.order_lines:
+        warnings.append("No order lines were found in the document.")
+    for index, line in enumerate(extracted.order_lines, start=1):
+        label = f"Line {index} ({line.position_description or 'no description'})"
+        if None in (line.amount, line.unit_price, line.total_price):
+            warnings.append(f"{label}: quantity, unit price or total is missing.")
+            continue
+        expected = line.amount * line.unit_price
+        if abs(expected - line.total_price) > LINE_TOLERANCE + 1e-9:
+            warnings.append(
+                f"{label}: quantity × unit price is {expected:.2f}, "
+                f"but the line total is {line.total_price:.2f}."
+            )
+
+    # The lines should equal the printed grand total minus printed taxes and fees.
+    grand_total = extracted.document_grand_total
+    if grand_total is not None:
+        document_net = grand_total - sum(extracted.document_taxes_and_fees_lines)
+        line_sum = extracted.total_cost or 0
+        if abs(line_sum - document_net) > LINE_TOLERANCE + 1e-9:
+            message = (
+                f"The order lines add up to {line_sum:.2f}, but the document's grand total "
+                f"minus taxes and fees is {document_net:.2f}."
+            )
+            culprits = [
+                (index, line)
+                for index, line in enumerate(extracted.order_lines, start=1)
+                if line.total_price is not None
+                and abs(line_sum - line.total_price - document_net) <= LINE_TOLERANCE + 1e-9
+            ]
+            if len(culprits) == 1:
+                index, line = culprits[0]
+                message += (
+                    f" Removing line {index} ({line.position_description or 'no description'}, "
+                    f"{line.total_price:.2f}) would close the gap; check whether it belongs "
+                    "in the order."
+                )
+            warnings.append(message)
+    return warnings
+
+
+def extract_vendor_data(pdf_text: str, db: Session, org_settings: dict) -> ExtractionResponse:
+    """Extract vendor data and classify the commodity group, applying the org's settings."""
+    required_fields = org_settings.get("required_fields", [])
     if not pdf_text or not pdf_text.strip():
         return ExtractionResponse(success=False, error="No text provided for extraction")
 
@@ -114,46 +259,45 @@ def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
     commodity_groups_list = "\n".join(
         f"{g.id} | {g.category} | {g.name}" for g in commodity_groups
     )
+    prompt = _build_prompt(pdf_text, commodity_groups_list)
 
-    try:
-        client = OpenAI(api_key=settings.openai_api_key)
-        response = client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _build_prompt(pdf_text, commodity_groups_list)},
-            ],
-            max_completion_tokens=4000,
-            temperature=0.3,
-        )
+    client = OpenAI(api_key=settings.openai_api_key)
+    extracted: ExtractedVendorData | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            extracted = _request_extraction(client, prompt)
+            break
+        except _UnreadableReply as exc:
+            logger.warning("Unreadable extraction reply (attempt %d/%d): %s",
+                           attempt, MAX_ATTEMPTS, exc)
+        except Exception:  # noqa: BLE001 - log API errors, never show them to the user
+            logger.exception("Extraction request to the AI service failed")
+            return ExtractionResponse(success=False, error=API_ERROR_MESSAGE)
+    if extracted is None:
+        return ExtractionResponse(success=False, error=PARSE_ERROR_MESSAGE)
 
-        content = response.choices[0].message.content
-        if not content:
-            return ExtractionResponse(success=False, error="Empty response from AI")
+    # Before the missing-field check, so a cleared tax ID is reported if required.
+    tax_id_warnings = _reject_mislabeled_tax_id(extracted)
 
-        extracted = ExtractedVendorData.model_validate(
-            json.loads(_strip_markdown_fences(content))
-        )
-    except Exception as exc:  # noqa: BLE001 — mirror the original catch-all
-        logger.exception("Error extracting vendor data")
-        return ExtractionResponse(success=False, error=str(exc))
+    lines = extracted.order_lines
+    extracted.order_lines = [line for line in lines if not line.is_optional]
+    extracted.optional_lines = [line for line in lines if line.is_optional]
 
-    # Check which fields are missing or empty (same rules as the original).
+    extracted.total_cost = round(
+        sum(line.total_price for line in extracted.order_lines if line.total_price is not None),
+        2,
+    )
+
+    # Only core fields plus the org's required ones; quotes rarely name a department.
     missing_fields: list[str] = []
-    if not extracted.title.strip():
-        missing_fields.append("Title/Short Description")
     if not extracted.vendor_name.strip():
         missing_fields.append("Vendor Name")
-    if not extracted.vat_id.strip():
-        missing_fields.append("Tax ID")
-    if not extracted.department.strip():
-        missing_fields.append("Department")
     if not extracted.order_lines:
         missing_fields.append("Order Lines")
-    if not extracted.total_cost:
-        missing_fields.append("Total Cost")
-    if not extracted.commodity_group_id or not extracted.commodity_group_name:
-        missing_fields.append("Commodity Group")
+    if "vat_id" in required_fields and not extracted.vat_id.strip():
+        missing_fields.append("Tax ID")
+    if "department" in required_fields and not extracted.department.strip():
+        missing_fields.append("Department")
 
     # Validate that the returned commodity group id actually exists.
     if extracted.commodity_group_id is not None:
@@ -164,11 +308,24 @@ def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
             )
             extracted.commodity_group_id = None
             extracted.commodity_group_name = None
-            if "Commodity Group" not in missing_fields:
-                missing_fields.append("Commodity Group")
+
+    # Same rules as on request save, so the form shows the final group right away.
+    match = match_rule(
+        rules_from_settings(org_settings),
+        [extracted.title, *(line.position_description for line in extracted.order_lines)],
+        extracted.total_cost,
+        extracted.commodity_group_id,
+    )
+    group = match and next(
+        (g for g in commodity_groups if g.id == match[1].commodity_group_id), None
+    )
+    if group is not None:
+        extracted.commodity_group_id = group.id
+        extracted.commodity_group_name = group.name
 
     return ExtractionResponse(
         success=True,
         data=extracted,
         missing_fields=missing_fields or None,
+        warnings=tax_id_warnings + _consistency_warnings(extracted),
     )
