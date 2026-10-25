@@ -33,14 +33,28 @@ Development happens in the **Acme Corp** organization, which has one of each rol
 | `buyer@acme.com` | buyer | approve requests |
 | `requester@acme.com` | requester | create & track requests |
 
-Every request needs approval by a buyer or admin (see the **Approvals** tab).
+Requests need approval by a buyer or admin (see the **Approvals** tab), unless
+the organization sets `auto_approve_below` in its settings: a request whose total
+is strictly below that amount is approved automatically, with no human approver
+and an "Auto-approved" entry in its activity. Acme Corp is seeded with $2,000
+(only if the setting is missing; never overwritten), so in Acme a $1,999.99
+request is approved at once and a $2,000.00 one waits for a buyer. Other tenants
+have no limit, so every request there still needs approval.
+
+The total is always computed on the server as the sum of the order lines; a
+`totalCost` sent by the client is ignored. In an organization with a limit, an
+update that changes the total decides approval again: below the limit it is
+auto-approved, otherwise it goes back to pending and any earlier approver is
+cleared. A rejected request stays rejected. Organizations without a limit keep
+the approval as it is.
 
 Other tenants exist to show the multi-tenant setup — **Walmart, Schaeffler,
 Siemens, BMW** — each with an admin at `admin@<company>.com` (same password).
 Their data is fully isolated from Acme's.
 
 On startup the backend applies schema migrations and seeds the database (demo
-accounts, organizations, commodity groups, suppliers, Acme's commodity rules).
+accounts, organizations, commodity groups, suppliers, Acme's commodity rules and
+approval limit).
 Both steps are idempotent, so restarts never duplicate or overwrite anything (your data lives
 in the `postgres_data` volume; `docker compose down -v` resets it). The OpenAI
 key is only needed for PDF extraction — everything else works without it.

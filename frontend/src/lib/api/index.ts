@@ -56,6 +56,8 @@ export interface CommodityRule {
 export interface OrganizationSettings {
   required_fields: ConfigurableRequiredField[];
   commodity_rules?: CommodityRule[];
+  // Totals strictly below this are approved automatically; null means never.
+  auto_approve_below?: number | null;
 }
 
 export interface MembersResponse {
@@ -206,7 +208,9 @@ export interface RequestActivity {
     | 'approved'
     | 'rejected'
     | 'document_attached'
-    | 'commodity_rule';
+    | 'commodity_rule'
+    | 'auto_approved'
+    | 'approval_reset';
   summary: string;
   detail: Record<string, unknown> | null;
   created_at: string;

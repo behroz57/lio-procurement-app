@@ -24,6 +24,7 @@ from app.schemas.requests import (
     RequestUpdate,
     StatusUpdate,
 )
+from app.services.approval import auto_approval_summary, format_usd, is_auto_approved
 from app.services.commodity_rules import describe, match_rule, rules_from_settings
 
 router = APIRouter(prefix="/requests", tags=["requests"])
@@ -120,6 +121,38 @@ def _apply_commodity_rule(
     return previous, summary, detail
 
 
+def _lines_total(lines) -> float:
+    return round(sum(line.total_price for line in lines), 2)
+
+
+def _auto_approve_limit(db: Session, organization_id: uuid.UUID) -> float | None:
+    org = db.get(Organization, organization_id)
+    return (org.settings or {}).get("auto_approve_below") if org else None
+
+
+def _reevaluate_approval(
+    request: ProcurementRequest, total: float, limit: float
+) -> tuple[str, str] | None:
+    """Apply the auto-approval rule after a total change; return the activity to log."""
+    previous = request.approval_status
+    # A buyer's rejection is final; lowering the total must not bypass it.
+    if previous == "rejected":
+        return None
+    request.approved_by = None
+    if is_auto_approved(total, limit):
+        request.approval_status = "approved"
+        request.approved_at = datetime.now(timezone.utc)
+        return "auto_approved", auto_approval_summary(total, limit)
+    request.approval_status = "pending"
+    request.approved_at = None
+    if previous == "pending":
+        return None
+    return "approval_reset", (
+        f"Approval reset to pending: total {format_usd(total)} is not below "
+        f"organization limit {format_usd(limit)}"
+    )
+
+
 def _log_activity(
     db: Session,
     request_id: uuid.UUID,
@@ -209,9 +242,13 @@ def create_request(
     membership: OrganizationMember = Depends(get_current_membership),
     db: Session = Depends(get_db),
 ) -> RequestOut:
+    # The total is always the sum of the order lines; the client's total_cost is ignored.
+    payload.total_cost = _lines_total(payload.order_lines)
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
     rule_applied = _apply_commodity_rule(db, membership.organization_id, payload)
+    limit = _auto_approve_limit(db, membership.organization_id)
+    auto_approved = is_auto_approved(payload.total_cost, limit)
 
     # Vendor fields are already cleaned up during extraction, so we can persist
     # them directly here.
@@ -227,6 +264,8 @@ def create_request(
         organization_id=membership.organization_id,
         created_by=membership.user_id,
         status="open",
+        approval_status="approved" if auto_approved else "pending",
+        approved_at=datetime.now(timezone.utc) if auto_approved else None,
     )
     request.order_lines = [
         OrderLine(
@@ -245,6 +284,11 @@ def create_request(
     if rule_applied:
         _, summary, detail = rule_applied
         _log_activity(db, request.id, membership.user_id, "commodity_rule", summary, detail)
+    if auto_approved:
+        _log_activity(
+            db, request.id, membership.user_id, "auto_approved",
+            auto_approval_summary(payload.total_cost, limit),
+        )
     db.commit()
 
     request = _get_org_request(db, request.id, membership.organization_id)
@@ -259,6 +303,7 @@ def update_request(
     db: Session = Depends(get_db),
 ) -> RequestOut:
     request = _get_org_request(db, request_id, membership.organization_id)
+    payload.total_cost = _lines_total(payload.order_lines)
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
     rule_applied = _apply_commodity_rule(db, membership.organization_id, payload)
@@ -300,6 +345,12 @@ def update_request(
     if rule_applied and rule_applied[0] != payload.commodity_group_id:
         _, summary, detail = rule_applied
         _log_activity(db, request.id, membership.user_id, "commodity_rule", summary, detail)
+    # Only organizations with a limit re-decide approval on a new total.
+    limit = _auto_approve_limit(db, membership.organization_id)
+    if "total_cost" in changed and limit is not None:
+        approval_entry = _reevaluate_approval(request, payload.total_cost, limit)
+        if approval_entry:
+            _log_activity(db, request.id, membership.user_id, *approval_entry)
     db.commit()
 
     request = _get_org_request(db, request_id, membership.organization_id)

@@ -38,6 +38,8 @@ class OrganizationSettings(BaseModel):
     required_fields: list[ConfigurableRequiredField] = Field(default_factory=list)
     # Evaluated in order; the first matching rule wins.
     commodity_rules: list[CommodityRule] = Field(default_factory=list)
+    # Requests with a total strictly below this are approved automatically; None = never.
+    auto_approve_below: float | None = Field(default=None, gt=0)
 
 
 class OrganizationCreate(BaseModel):

@@ -354,8 +354,8 @@ export default function RequestDetailPage() {
                   ))}
                 </select>
               </div>
-              <Input label="Total Cost ($) *" type="number" step="0.01" value={form.totalCost}
-                onChange={(e) => setForm({ ...form, totalCost: parseFloat(e.target.value) || 0 })} />
+              <Input label="Total Cost ($)" type="number" value={form.totalCost} disabled
+                helperText="Calculated from the order lines." />
               <p className="text-xs text-ink/45">Order lines are edited from the request creation flow.</p>
             </div>
             <div className="border-t border-line p-6 bg-ink-800/[0.02] flex gap-3">

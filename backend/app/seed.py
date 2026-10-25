@@ -78,6 +78,19 @@ def seed_commodity_rules(organization: Organization) -> int:
     return 1
 
 
+# Acme approves requests below $2,000 automatically. Seeded once; never overwritten.
+ACME_AUTO_APPROVE_BELOW = 2000
+
+
+def seed_auto_approval(organization: Organization) -> int:
+    """Give the org Acme's auto-approval limit if it has no auto_approve_below key yet."""
+    settings = organization.settings or {}
+    if "auto_approve_below" in settings:
+        return 0
+    organization.settings = {**settings, "auto_approve_below": ACME_AUTO_APPROVE_BELOW}
+    return 1
+
+
 def seed_commodity_groups(db: Session) -> int:
     """Insert commodity groups that aren't already present (keyed by id)."""
     existing = set(db.scalars(select(CommodityGroup.id)))
@@ -206,6 +219,7 @@ def seed(db: Session) -> dict[str, int]:
         # Articles reference suppliers by name, so this must run after suppliers.
         "articles": seed_articles(db, dev_org_id) if dev_org_id else 0,
         "commodity_rules": seed_commodity_rules(dev_org) if dev_org else 0,
+        "auto_approve_below": seed_auto_approval(dev_org) if dev_org else 0,
         "organizations": orgs_created,
         "users": users_created,
     }
