@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.deps import get_current_membership
 from app.db.session import get_db
 from app.models import Article, OrganizationMember
-from app.schemas.articles import ArticleOut, ArticlePage
+from app.schemas.articles import ArticleOut, ArticlePage, ArticleSuggestion
+from app.services.article_suggestions import rank_articles
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -58,6 +59,30 @@ def list_articles(
         for a in db.scalars(stmt)
     ]
     return ArticlePage(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/suggestions", response_model=list[ArticleSuggestion])
+def suggest_articles(
+    q: str = Query(default="", description="Order line description to match"),
+    limit: int = Query(default=3, ge=1, le=10),
+    membership: OrganizationMember = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> list[ArticleSuggestion]:
+    """Catalog articles matching an order line, best match first, then cheapest."""
+    articles = db.scalars(
+        select(Article).where(Article.organization_id == membership.organization_id)
+    ).all()
+    return [
+        ArticleSuggestion(
+            article_number=a.article_number,
+            description=a.description,
+            supplier_name=a.supplier.name if a.supplier else None,
+            unit_price=a.unit_price,
+            currency=a.currency,
+            unit=a.unit,
+        )
+        for _, a in rank_articles(q, list(articles))[:limit]
+    ]
 
 
 @router.get("/count")

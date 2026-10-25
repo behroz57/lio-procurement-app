@@ -87,6 +87,20 @@ python scripts/eval_extraction.py            # live run, saves to out/eval/
 python scripts/eval_extraction.py --rescore  # rescore the saved responses
 ```
 
+## Catalog price suggestions
+
+On the New Request page each order line shows up to 3 matching articles from the
+organization's own catalog with the negotiated unit price, while typing and right
+after PDF extraction. "Use" fills the line's description, unit price and unit;
+when the line already has a higher price in the same unit, the saving per unit is
+shown. No OpenAI key is needed.
+
+`GET /articles/suggestions?q=…&limit=3` scores articles by the share of the
+line's words they contain, each word weighted by how rare it is in the catalog
+(filler, numbers and units are ignored). Weak matches return nothing; ties go to
+the cheapest article. Check it with `python scripts/eval_suggestions.py` (or
+`--search` for the old phrase search as a baseline).
+
 ## Commodity rules (per organization)
 
 An organization can force how requests are categorised with `commodity_rules`

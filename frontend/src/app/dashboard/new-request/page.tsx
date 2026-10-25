@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import * as api from '@/lib/api';
@@ -8,12 +8,23 @@ import { useCommodityGroups } from '@/lib/hooks/useCommodityGroups';
 import { Button, Input, Alert, Loader } from '@/components/base';
 
 interface OrderLine {
+  // Stable id so a line keeps its suggestions when other lines are removed.
+  key: number;
   positionDescription: string;
   unitPrice: number;
   amount: number;
   unit: string;
   totalPrice: number;
 }
+
+// Units that all mean "one item", so a catalog "piece" price compares to a quoted "ea.".
+const ITEM_UNITS = new Set(['', 'ea', 'each', 'pc', 'pcs', 'piece', 'pieces', 'unit', 'units', 'item', 'items']);
+const normalizeUnit = (unit: string) => {
+  const value = unit.trim().toLowerCase().replace(/\.$/, '');
+  return ITEM_UNITS.has(value) ? 'item' : value.replace(/s$/, '');
+};
+const formatPrice = (price: number, currency: string) =>
+  `${currency === 'USD' ? '$' : `${currency} `}${price.toFixed(2)}`;
 
 export default function NewRequestPage() {
   const router = useRouter();
@@ -36,6 +47,29 @@ export default function NewRequestPage() {
   const [warning, setWarning] = useState('');
   const [extractionWarnings, setExtractionWarnings] = useState<string[]>([]);
   const [extracting, setExtracting] = useState(false);
+
+  // Catalog suggestions per order line, keyed by the line's stable key
+  const [suggestions, setSuggestions] = useState<Record<number, api.ArticleSuggestion[]>>({});
+  const nextLineKey = useRef(0);
+  const suggestionTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const latestQuery = useRef<Record<number, string>>({});
+
+  const loadSuggestions = async (key: number, description: string) => {
+    latestQuery.current[key] = description;
+    if (description.trim().length < 3) {
+      setSuggestions((current) => ({ ...current, [key]: [] }));
+      return;
+    }
+    try {
+      const result = await api.articles.suggestions(description);
+      // Ignore an answer for text the user has changed since.
+      if (latestQuery.current[key] === description) {
+        setSuggestions((current) => ({ ...current, [key]: result }));
+      }
+    } catch {
+      // Suggestions are optional; the form works without them.
+    }
+  };
 
   // PDF parsing mutation
   const parsePDFMutation = useMutation({
@@ -84,14 +118,17 @@ export default function NewRequestPage() {
       setVatId(extracted.vatId || '');
       setDepartment(extracted.department || '');
       // Unknown numbers arrive as null; the form edits plain numbers.
-      setOrderLines(
-        (extracted.orderLines || []).map((line) => ({
-          ...line,
-          unitPrice: line.unitPrice ?? 0,
-          amount: line.amount ?? 0,
-          totalPrice: line.totalPrice ?? 0,
-        }))
-      );
+      const lines = (extracted.orderLines || []).map((line) => ({
+        key: nextLineKey.current++,
+        positionDescription: line.positionDescription,
+        unit: line.unit,
+        unitPrice: line.unitPrice ?? 0,
+        amount: line.amount ?? 0,
+        totalPrice: line.totalPrice ?? 0,
+      }));
+      setOrderLines(lines);
+      setSuggestions({});
+      lines.forEach((line) => loadSuggestions(line.key, line.positionDescription));
       setTotalCost(extracted.totalCost || 0);
       
       // Set commodity group (now included in extraction)
@@ -123,6 +160,7 @@ export default function NewRequestPage() {
     setOrderLines([
       ...orderLines,
       {
+        key: nextLineKey.current++,
         positionDescription: '',
         unitPrice: 0,
         amount: 1,
@@ -143,14 +181,47 @@ export default function NewRequestPage() {
     }
     
     setOrderLines(updated);
-    
+
     // Update total cost
     const newTotal = updated.reduce((sum, line) => sum + line.totalPrice, 0);
     setTotalCost(newTotal);
+
+    // Look up catalog articles once the user pauses typing
+    if (field === 'positionDescription') {
+      const key = updated[index].key;
+      clearTimeout(suggestionTimers.current[key]);
+      suggestionTimers.current[key] = setTimeout(() => loadSuggestions(key, String(value)), 400);
+    }
+  };
+
+  // Use a catalog article: description, negotiated unit price and unit; amount stays
+  const applySuggestion = (index: number, suggestion: api.ArticleSuggestion) => {
+    const updated = [...orderLines];
+    const line = updated[index];
+    const unitPrice = Number(suggestion.unit_price);
+    updated[index] = {
+      ...line,
+      positionDescription: suggestion.description,
+      unitPrice,
+      unit: suggestion.unit,
+      totalPrice: unitPrice * line.amount,
+    };
+    setOrderLines(updated);
+    setTotalCost(updated.reduce((sum, l) => sum + l.totalPrice, 0));
+    clearTimeout(suggestionTimers.current[line.key]);
+    latestQuery.current[line.key] = suggestion.description;
+    setSuggestions((current) => ({ ...current, [line.key]: [] }));
   };
 
   // Remove order line
   const removeOrderLine = (index: number) => {
+    const removedKey = orderLines[index].key;
+    clearTimeout(suggestionTimers.current[removedKey]);
+    setSuggestions((current) => {
+      const next = { ...current };
+      delete next[removedKey];
+      return next;
+    });
     const updated = orderLines.filter((_, i) => i !== index);
     setOrderLines(updated);
     const newTotal = updated.reduce((sum, line) => sum + line.totalPrice, 0);
@@ -187,7 +258,13 @@ export default function NewRequestPage() {
         commodityGroupId: commodityGroupId,
         totalCost,
         department,
-        orderLines,
+        orderLines: orderLines.map((line) => ({
+          positionDescription: line.positionDescription,
+          unitPrice: line.unitPrice,
+          amount: line.amount,
+          unit: line.unit,
+          totalPrice: line.totalPrice,
+        })),
       });
 
       // Attach the original PDF (if one was uploaded) so it shows on the detail page.
@@ -390,7 +467,7 @@ export default function NewRequestPage() {
           ) : (
             <div className="space-y-4">
               {orderLines.map((line, index) => (
-                <div key={index} className="border border-gray-200 rounded-lg p-4">
+                <div key={line.key} className="border border-gray-200 rounded-lg p-4">
                   <div className="flex items-start justify-between mb-4">
                     <h3 className="text-sm font-medium text-gray-700">Line {index + 1}</h3>
                     <button
@@ -452,6 +529,47 @@ export default function NewRequestPage() {
                       ${line.totalPrice.toFixed(2)}
                     </span>
                   </div>
+
+                  {(suggestions[line.key] || []).length > 0 && (
+                    <div className="mt-3 border-t border-gray-100 pt-3">
+                      <p className="text-xs font-medium text-gray-500 mb-1.5">
+                        Negotiated catalog prices
+                      </p>
+                      <ul className="space-y-1.5">
+                        {suggestions[line.key].map((suggestion, i) => {
+                          const price = Number(suggestion.unit_price);
+                          // Only compare prices quoted in the same unit.
+                          const saving =
+                            line.unitPrice > 0 &&
+                            price < line.unitPrice &&
+                            normalizeUnit(line.unit) === normalizeUnit(suggestion.unit)
+                              ? line.unitPrice - price
+                              : null;
+                          return (
+                            <li key={i} className="flex items-center justify-between gap-3 text-sm">
+                              <span className="text-gray-700 min-w-0">
+                                {suggestion.description} · {suggestion.supplier_name ?? 'Unknown supplier'} ·{' '}
+                                {formatPrice(price, suggestion.currency)} / {suggestion.unit}
+                                {saving !== null && (
+                                  <span className="ml-2 font-medium text-green-700">
+                                    saves {formatPrice(saving, suggestion.currency)} / unit
+                                  </span>
+                                )}
+                              </span>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => applySuggestion(index, suggestion)}
+                              >
+                                Use
+                              </Button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -959,6 +959,31 @@ def test_seed_never_overwrites_commodity_rules():
     client.patch("/organizations/me/settings", json=before, headers=_auth(admin))
 
 
+def test_article_suggestions_are_org_scoped():
+    assert client.get("/articles/suggestions?q=office%20chair").status_code == 401
+
+    acme = _signin("requester@acme.com")
+    r = client.get(
+        "/articles/suggestions", params={"q": "ergonomic mesh office chair"}, headers=_auth(acme)
+    )
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert 1 <= len(items) <= 3
+    assert items[0]["article_number"] == "DEL-00888"
+    assert set(items[0]) == {
+        "article_number", "description", "supplier_name", "unit_price", "currency", "unit"
+    }
+    one = client.get(
+        "/articles/suggestions", params={"q": "office chair", "limit": 1}, headers=_auth(acme)
+    ).json()
+    assert len(one) == 1
+
+    # Walmart has no catalog of its own and never sees Acme's.
+    walmart = _signin("admin@walmart.com")
+    r = client.get("/articles/suggestions", params={"q": "office chair"}, headers=_auth(walmart))
+    assert r.status_code == 200 and r.json() == []
+
+
 if __name__ == "__main__":
     import pytest
 

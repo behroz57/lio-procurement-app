@@ -147,6 +147,15 @@ export interface Article {
   created_at: string;
 }
 
+export interface ArticleSuggestion {
+  article_number: string;
+  description: string;
+  supplier_name: string | null;
+  unit_price: string;
+  currency: string;
+  unit: string;
+}
+
 export interface ArticlePage {
   items: Article[];
   total: number;
@@ -341,6 +350,12 @@ export const articles = {
 
   count(): Promise<{ count: number }> {
     return apiFetch('/articles/count');
+  },
+
+  /** Negotiated catalog articles matching an order line description, best first. */
+  suggestions(q: string, limit = 3): Promise<ArticleSuggestion[]> {
+    const qs = new URLSearchParams({ q, limit: String(limit) });
+    return apiFetch(`/articles/suggestions?${qs.toString()}`);
   },
 };
 
